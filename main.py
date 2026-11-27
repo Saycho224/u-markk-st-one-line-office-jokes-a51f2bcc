@@ -1,54 +1,101 @@
 #!/usr/bin/env python3
-"""Write the office joke to /output/entry.txt.
+"""Shredder fan-club joke — make.fun one-line office jokes entry.
 
-Stdlib only. Reads entry.txt sitting next to this script, validates it
-against the competition gate (UTF-8 text, 1-199 chars, not only
-whitespace), then copies it byte-for-byte to
-$MAKEFUN_OUTPUT_DIR/entry.txt (default /output) and verifies the copy
-by size and sha256.
+The program carries exactly one joke line and publishes it as the
+competition entry: it validates the line against the gate (UTF-8 text,
+1-199 characters), writes it to ``entry.txt`` inside the output
+directory the harness provides, and then proves the write by reading
+the file back and comparing bytes, size and sha256 digest.
+
+Nothing here reaches the network, spawns a process, or evaluates code:
+the only environment value consulted is MAKEFUN_OUTPUT_DIR, used
+purely as a directory path.
 """
 
 import hashlib
 import os
 import sys
-from pathlib import Path
 
-ENTRY_NAME = "entry.txt"
+ENTRY = (
+    "Our shredder jammed on a single sheet of paper, so now it has "
+    "a maintenance contract, a warning label, and a fan club that "
+    "feeds it one page a week."
+)
+
+MIN_CHARS = 1
 MAX_CHARS = 199
 
 
-def fail(message):
-    print(f"error: {message}", file=sys.stderr)
-    sys.exit(1)
+def gate_problems(text):
+    """Return a list of gate violations for *text* (empty means OK)."""
+    problems = []
+    if not isinstance(text, str):
+        problems.append("entry is not text")
+        return problems
+    if len(text) < MIN_CHARS:
+        problems.append("entry is empty")
+    if len(text) > MAX_CHARS:
+        problems.append(
+            "entry is %d chars, over the %d-char limit"
+            % (len(text), MAX_CHARS)
+        )
+    if text != text.strip():
+        problems.append("entry has leading or trailing whitespace")
+    if "\n" in text or "\r" in text:
+        problems.append("entry must be a single line")
+    return problems
 
 
-def main():
-    here = Path(__file__).resolve().parent
-    source = here / ENTRY_NAME
-    if not source.is_file():
-        fail(f"{ENTRY_NAME} not found next to main.py")
-
-    raw = source.read_bytes()
+def to_bytes(text):
+    """Encode the entry as UTF-8, refusing anything unencodable."""
     try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        fail(f"{ENTRY_NAME} is not valid UTF-8")
-    if not 1 <= len(text) <= MAX_CHARS:
-        fail(f"{ENTRY_NAME} is {len(text)} chars, gate needs 1-{MAX_CHARS}")
-    if not text.strip():
-        fail(f"{ENTRY_NAME} is only whitespace")
+        return text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise SystemExit("entry is not valid UTF-8: %s" % exc)
 
-    out_dir = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    target = out_dir / ENTRY_NAME
-    target.write_bytes(raw)
 
-    check = target.read_bytes()
-    if check != raw:
-        fail("verification failed: output differs from source")
-    digest = hashlib.sha256(raw).hexdigest()
-    print(f"wrote {target} ({len(raw)} bytes, sha256 {digest})")
+def fingerprint(data):
+    """Hex sha256 of *data*."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def resolve_output_dir():
+    """Directory the harness wants the entry in (default /output)."""
+    chosen = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+    if not chosen:
+        raise SystemExit("MAKEFUN_OUTPUT_DIR is set but empty")
+    return chosen
+
+
+def publish(text, out_dir):
+    """Write *text* to entry.txt under *out_dir* and verify it back."""
+    payload = to_bytes(text)
+    os.makedirs(out_dir, exist_ok=True)
+    target = os.path.join(out_dir, "entry.txt")
+    with open(target, "wb") as handle:
+        handle.write(payload)
+    with open(target, "rb") as handle:
+        back = handle.read()
+    if back != payload:
+        raise SystemExit("round-trip mismatch: file differs from entry")
+    print(
+        "wrote %s (%d bytes, sha256 %s)"
+        % (target, len(back), fingerprint(back))
+    )
+    return target
+
+
+def run(argv=None):
+    """Gate the entry, publish it, and report the verified digest."""
+    problems = gate_problems(ENTRY)
+    if problems:
+        for problem in problems:
+            print("gate failed: %s" % problem, file=sys.stderr)
+        return 1
+    target = publish(ENTRY, resolve_output_dir())
+    print("entry OK: %d chars -> %s" % (len(ENTRY), target))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run())
